@@ -266,6 +266,7 @@ class SmppClient
 	 * $message is always in octets regardless of the data encoding.
 	 * For correct handling of Concatenated SMS, message must be encoded with GSM 03.38 (data_coding 0x00) or UCS-2BE (0x08).
 	 * Concatenated SMS'es uses 16-bit reference numbers, which gives 152 GSM 03.38 chars or 66 UCS-2BE chars per CSMS.
+	 * If we are using 8-bit ref numbers in the UDH for CSMS it's 153 GSM 03.38 chars
 	 * 
 	 * @param SmppAddress $from
 	 * @param SmppAddress $to
@@ -290,7 +291,7 @@ class SmppClient
 				break;
 			case SMPP::DATA_CODING_DEFAULT:
 				$singleSmsOctetLimit = 160; // we send data in octets, but GSM 03.38 will be packed in septets (7-bit) by SMSC.
-				$csmsSplit = 152; // send 152 chars in each SMS since, we will use 16-bit CSMS ids (SMSC will format data)
+				$csmsSplit = (self::$csms_method == SmppClient::CSMS_8BIT_UDH) ? 153 : 152; // send 152/153 chars in each SMS (SMSC will format data)
 				break;
 			default:
 				$singleSmsOctetLimit = 254; // From SMPP standard
@@ -517,6 +518,30 @@ class SmppClient
 		$dataCoding = next($ar);
 		next($ar); // sm_default_msg_id 
 		$sm_length = next($ar);
+
+		$udhi = null;
+
+		if(($esmClass & SMPP::ESM_UDHI) != 0) { // Message has a UDHI
+
+			$udhi = new stdClass();
+
+			$udhi->length = next($ar);
+			$udhi->iei = next($ar);
+
+			next($ar); // iedl_length
+			
+			if($udhi->iei == 0x00) { // Information-Element-Identifier = 0x00 = Concatenated short messages, 8-bit reference number
+
+				$udhi->concat = new stdClass();
+
+				$udhi->concat->identifier = (int)next($ar);
+				$udhi->concat->parts = next($ar);
+				$udhi->concat->part = next($ar);
+
+			}
+
+		}
+
 		$message = $this->getString($ar,$sm_length);
 		
 		// Check for optional params, and parse them
@@ -626,11 +651,11 @@ class SmppClient
 		$response=$this->readPDU_resp($this->sequence_number, $pdu->id);
 		if ($response === false) throw new SmppException('Failed to read reply to command: 0x'.dechex($id));
 		
-		if ($response->status != SMPP::ESME_ROK) throw new SmppException(SMPP::getStatusMessage($response->status), $response->status);
-		
 		$this->sequence_number++;
 		
-		// Reached max sequence number, spec does not state what happens now, so we re-connect
+		if ($response->status != SMPP::ESME_ROK) throw new SmppException(SMPP::getStatusMessage($response->status), $response->status);
+		
+				// Reached max sequence number, spec does not state what happens now, so we re-connect
 		if ($this->sequence_number >= 0x7FFFFFFF) {
 			$this->reconnect();
 		}
@@ -915,7 +940,7 @@ class SMPP
 	const ESM_DELIVER_CONV_ABORT = 0x18;
 	const ESM_DELIVER_IDN = 0x20; // Intermediate delivery notification
 	// ESM bits 7-6 
-	const ESM_UHDI = 0x40;
+	const ESM_UDHI = 0x40;
 	const ESM_REPLYPATH = 0x80;
 	
 	// SMPP v3.4 - 5.2.17 page 124
@@ -1112,8 +1137,9 @@ class SmppDeliveryReceipt extends SmppSms
 	 */
 	public function parseDeliveryReceipt()
 	{
-		$numMatches = preg_match('/^id:([^ ]+) sub:(\d{1,3}) dlvrd:(\d{3}) submit date:(\d{10,12}) done date:(\d{10,12}) stat:([A-Z]{7}) err:(\d{3}) text:(.*)$/si', $this->message, $matches);
+		$numMatches = preg_match('/^id:([^ ]+) sub:(\d{1,3}) dlvrd:(\d{3}) submit date:(\d{10,12}) done date:(\d{10,12}) stat:([A-Z]{7}) err:(\d{2,3}) text:(.*)$/si', $this->message, $matches);
 		if ($numMatches == 0) return false;
+
 		list($matched, $this->id, $this->sub, $this->dlvrd, $this->submitDate, $this->doneDate, $this->stat, $this->err, $this->text) = $matches;
 		
 		// Convert dates
@@ -1169,10 +1195,11 @@ class SmppSms extends SmppPdu
 	 * @param string $validityPeriod (optional)
 	 * @param integer $smDefaultMsgId (optional)
 	 * @param integer $replaceIfPresentFlag (optional)
+	 * @param UDHI $udhi (optional)	 
 	 */
 	public function __construct($id, $status, $sequence, $body, $service_type, SmppAddress $source, SmppAddress $destination, 
 		$esmClass, $protocolId, $priorityFlag, $registeredDelivery, $dataCoding, $message, $tags, 
-		$scheduleDeliveryTime=null, $validityPeriod=null, $smDefaultMsgId=null, $replaceIfPresentFlag=null)
+		$scheduleDeliveryTime=null, $validityPeriod=null, $smDefaultMsgId=null, $replaceIfPresentFlag=null, $udhi=null)
 	{
 		parent::__construct($id, $status, $sequence, $body);
 		$this->service_type = $service_type;
@@ -1189,6 +1216,7 @@ class SmppSms extends SmppPdu
 		$this->validityPeriod = $validityPeriod;
 		$this->smDefaultMsgId = $smDefaultMsgId;
 		$this->replaceIfPresentFlag = $replaceIfPresentFlag;
+		$this->udhi = $udhi;		
 	}
 	
 	/**
