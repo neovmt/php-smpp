@@ -320,7 +320,7 @@ class SmppClient
 				$seqnum = 1;
 				foreach ($parts as $part) {
 					$udh = pack('cccccc',5,0,3,substr($csmsReference,1,1),count($parts),$seqnum);
-					$res = $this->submit_sm($from, $to, $udh.$part, $tags, $dataCoding, $priority, $scheduleDeliveryTime, $validityPeriod, (SmppClient::$sms_esm_class|0x40));
+					$res = $this->submit_sm($from, $to, $udh.$part, $tags, $dataCoding, $priority, $scheduleDeliveryTime, $validityPeriod, (SmppClient::$sms_esm_class|SMPP::ESM_UDHI));
 					$seqnum++;
 				}
 				return $res;
